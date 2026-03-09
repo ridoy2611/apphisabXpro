@@ -163,14 +163,12 @@
         .profile-details p { color: var(--text-muted); margin-bottom: 8px; font-size: 0.95rem; }
         .company-badge { display: inline-block; background: rgba(212, 175, 55, 0.1); color: var(--light-gold); padding: 5px 15px; border-radius: 20px; margin-bottom: 10px; font-size: 0.85rem; border: 1px solid rgba(212, 175, 55, 0.3); }
 
-        /* Google Button Style */
-        .google-btn {
-            width: 100%; padding: 14px; background: white; color: #444; border-radius: 10px;
-            font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 10px;
-            cursor: pointer; margin-top: 10px; border: none; font-size: 1rem;
-        }
-        .google-btn img { width: 20px; }
-
+        /* Auth Form Styles */
+        .auth-box { background: var(--bg-black); padding: 15px; border-radius: 12px; border: 1px solid #333; margin-top: 15px; text-align: left; }
+        .auth-box input { margin-bottom: 0px; }
+        .auth-buttons { display: flex; gap: 10px; margin-top: 10px; }
+        .auth-buttons .btn { margin-top: 0; padding: 12px; font-size: 1rem; }
+        
         /* Backup/Restore Buttons */
         .profile-actions { margin-top: 25px; display: flex; flex-direction: column; gap: 10px; }
         .btn-outline { background: var(--dark-gray); color: var(--gold); border: 1px solid var(--gold); }
@@ -197,12 +195,11 @@
         <div id="view-home" class="view-section active">
             <header class="top-header">
                 <div class="user-info">
-                    <h2 id="welcome-name">Hello, Ridoy</h2>
+                    <h2 id="welcome-name">Hello, Guest</h2>
                     <p>Welcome to HisabX Pro</p>
                 </div>
                 <div class="profile-icon" id="profile-btn">
                     <span class="material-icons" id="header-avatar-icon">account_circle</span>
-                    <img id="header-user-img" style="display:none;">
                 </div>
             </header>
 
@@ -319,18 +316,28 @@
                 <div class="profile-details">
                     <div class="profile-avatar">
                         <span class="material-icons" id="modal-avatar-icon">account_circle</span>
-                        <img id="modal-user-img" style="display:none;">
                     </div>
-                    <h2 id="profile-name">Ridoy Saha</h2>
-                    <span class="company-badge">Pragati IT</span>
-                    <p id="profile-email"><span class="material-icons" style="font-size: 14px; vertical-align: middle;">email</span> doy2426@gmail.com</p>
-                    <p><span class="material-icons" style="font-size: 14px; vertical-align: middle;">location_on</span> Feni, Bangladesh</p>
+                    <h2 id="profile-name">Guest User</h2>
+                    <span class="company-badge">Pragati IT Solution</span>
+                    <p id="profile-email"><span class="material-icons" style="font-size: 14px; vertical-align: middle;">email</span> Not logged in</p>
                     
-                    <button id="google-login-btn" class="google-btn">
-                        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google">
-                        Sign in with Google
-                    </button>
-                    <button id="google-logout-btn" class="btn btn-danger" style="display:none;">Logout Account</button>
+                    <div class="auth-box" id="auth-container">
+                        <p style="color: var(--gold); font-size: 0.9rem; margin-bottom: 10px; font-weight: 600;">Cloud Backup Login</p>
+                        <div class="form-control">
+                            <input type="email" id="auth-email" placeholder="Email Address" required />
+                        </div>
+                        <div class="form-control" style="margin-bottom: 5px;">
+                            <input type="password" id="auth-password" placeholder="Password (Min 6 chars)" required />
+                        </div>
+                        <p id="auth-error-msg" style="color: var(--expense-color); font-size: 0.8rem; display: none; margin-bottom: 5px;"></p>
+                        
+                        <div class="auth-buttons">
+                            <button id="btn-login" class="btn" style="flex: 1;">Login</button>
+                            <button id="btn-signup" class="btn btn-outline" style="flex: 1;">Sign Up</button>
+                        </div>
+                    </div>
+
+                    <button id="btn-logout" class="btn btn-danger" style="display:none; margin-top: 15px;">Logout Account</button>
 
                     <div class="profile-actions">
                         <button class="btn btn-outline" id="btn-backup"><span class="material-icons" style="font-size: 18px; vertical-align: text-bottom;">download</span> Download Backup</button>
@@ -365,10 +372,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
-        import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-analytics.js";
-        import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
-        
-        // NEW: Firestore Imports
+        import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, where, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
 
         const firebaseConfig = {
@@ -377,37 +381,61 @@
             projectId: "hisabx-pro-3a86d",
             storageBucket: "hisabx-pro-3a86d.firebasestorage.app",
             messagingSenderId: "413346560199",
-            appId: "1:413346560199:web:6ae535587a021ee09066e2",
-            measurementId: "G-CMVQR38BT0"
+            appId: "1:413346560199:web:6ae535587a021ee09066e2"
         };
 
         const app = initializeApp(firebaseConfig);
-        const analytics = getAnalytics(app);
         const auth = getAuth(app);
-        const db = getFirestore(app); // Initialize Firestore
-        const provider = new GoogleAuthProvider();
+        const db = getFirestore(app); 
 
-        let currentUser = null; // Track logged-in user
+        let currentUser = null; 
 
         // UI Elements for Auth
-        const loginBtn = document.getElementById('google-login-btn');
-        const logoutBtn = document.getElementById('google-logout-btn');
+        const authContainer = document.getElementById('auth-container');
+        const emailInput = document.getElementById('auth-email');
+        const passwordInput = document.getElementById('auth-password');
+        const loginBtn = document.getElementById('btn-login');
+        const signupBtn = document.getElementById('btn-signup');
+        const logoutBtn = document.getElementById('btn-logout');
+        const errorMsg = document.getElementById('auth-error-msg');
+        
         const welcomeName = document.getElementById('welcome-name');
         const profileName = document.getElementById('profile-name');
         const profileEmail = document.getElementById('profile-email');
-        const headerImg = document.getElementById('header-user-img');
-        const headerIcon = document.getElementById('header-avatar-icon');
-        const modalImg = document.getElementById('modal-user-img');
-        const modalIcon = document.getElementById('modal-avatar-icon');
+
+        const showError = (msg) => {
+            errorMsg.innerText = msg;
+            errorMsg.style.display = 'block';
+        };
 
         // Login Logic
         loginBtn.onclick = async () => {
+            errorMsg.style.display = 'none';
+            if(!emailInput.value || !passwordInput.value) return showError("Please enter email and password.");
             try {
-                await signInWithPopup(auth, provider);
+                loginBtn.innerText = "Wait...";
+                await signInWithEmailAndPassword(auth, emailInput.value, passwordInput.value);
                 document.getElementById('profile-modal').classList.remove('show');
             } catch (error) {
-                console.error("Login Failed", error);
-                alert("Firebase Error: " + error.message); 
+                showError("Login Failed: " + error.message.replace('Firebase:', ''));
+            } finally {
+                loginBtn.innerText = "Login";
+            }
+        };
+
+        // Sign Up Logic
+        signupBtn.onclick = async () => {
+            errorMsg.style.display = 'none';
+            if(!emailInput.value || !passwordInput.value) return showError("Please enter email and password.");
+            try {
+                signupBtn.innerText = "Wait...";
+                await createUserWithEmailAndPassword(auth, emailInput.value, passwordInput.value);
+                document.getElementById('profile-modal').classList.remove('show');
+                alert("Account created successfully!");
+            } catch (error) {
+                showError("Sign Up Failed: " + error.message.replace('Firebase:', ''));
+            } finally {
+                signupBtn.innerText = "Sign Up";
             }
         };
 
@@ -422,16 +450,13 @@
         onAuthStateChanged(auth, async (user) => {
             if (user) {
                 currentUser = user;
-                welcomeName.innerText = `Hello, ${user.displayName.split(' ')[0]}`;
-                profileName.innerText = user.displayName;
+                const userDisplayName = user.email.split('@')[0]; // Extract name from email
+                
+                welcomeName.innerText = `Hello, ${userDisplayName}`;
+                profileName.innerText = userDisplayName;
                 profileEmail.innerHTML = `<span class="material-icons" style="font-size: 14px; vertical-align: middle;">email</span> ${user.email}`;
                 
-                if(user.photoURL) {
-                    headerImg.src = user.photoURL; headerImg.style.display = 'block'; headerIcon.style.display = 'none';
-                    modalImg.src = user.photoURL; modalImg.style.display = 'block'; modalIcon.style.display = 'none';
-                }
-
-                loginBtn.style.display = 'none';
+                authContainer.style.display = 'none';
                 logoutBtn.style.display = 'block';
 
                 // --- Load Data from Firestore ---
@@ -459,8 +484,11 @@
 
             } else {
                 currentUser = null;
-                welcomeName.innerText = "Hello, Ridoy";
-                loginBtn.style.display = 'flex';
+                welcomeName.innerText = "Hello, Guest";
+                profileName.innerText = "Guest User";
+                profileEmail.innerHTML = `<span class="material-icons" style="font-size: 14px; vertical-align: middle;">email</span> Not logged in`;
+                
+                authContainer.style.display = 'block';
                 logoutBtn.style.display = 'none';
 
                 // --- Load Data from LocalStorage (Fallback) ---
@@ -470,7 +498,6 @@
                 updateUI();
             }
         });
-
 
         // ==============================================
         // APP LOGIC (Merged into Module)
@@ -528,7 +555,6 @@
                 const sign = t.type === 'income' ? '+' : '-';
                 const amountClass = t.type === 'income' ? 'plus' : 'minus';
 
-                // Notice: id is wrapped in quotes for string processing
                 li.innerHTML = `
                     <div class="trans-left">
                         <span class="trans-title">${t.text}</span>
@@ -563,11 +589,7 @@
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
             const amount = Number(document.getElementById('amount').value);
-            
-            if (amount <= 0) {
-                alert('Amount must be greater than zero!');
-                return;
-            }
+            if (amount <= 0) { alert('Amount must be greater than zero!'); return; }
 
             const transactionData = {
                 text: document.getElementById('text').value,
@@ -579,9 +601,7 @@
                 timestamp: Date.now()
             };
 
-            if (currentUser) {
-                transactionData.userId = currentUser.uid;
-            }
+            if (currentUser) { transactionData.userId = currentUser.uid; }
 
             try {
                 if (isEditing) {
@@ -599,15 +619,13 @@
                         transactions.push(transactionData);
                     }
                 }
-                closeModal();
-                saveAndRender();
+                closeModal(); saveAndRender();
             } catch (error) {
                 console.error("Error saving to Firestore:", error);
                 alert("Failed to save transaction.");
             }
         });
 
-        // Global functions for inline onclick
         window.editTransaction = function(id) {
             const t = transactions.find(tr => String(tr.id) === String(id));
             if (!t) return;
@@ -622,10 +640,8 @@
         };
 
         window.openDeleteConfirm = function(id, btnElement) {
-            deleteIdPending = id;
-            deleteElementPending = btnElement.closest('.transaction-item');
-            deleteModal.classList.add('show');
-            deleteModal.classList.add('tumble-anim');
+            deleteIdPending = id; deleteElementPending = btnElement.closest('.transaction-item');
+            deleteModal.classList.add('show'); deleteModal.classList.add('tumble-anim');
         };
 
         function closeDeleteConfirm() {
@@ -635,19 +651,13 @@
 
         document.getElementById('cancel-delete-btn').addEventListener('click', closeDeleteConfirm);
 
-        // Delete from Firestore
         document.getElementById('confirm-delete-btn').addEventListener('click', async () => {
             if (deleteIdPending && deleteElementPending) {
-                const idToDelete = deleteIdPending;
-                const elementToRemove = deleteElementPending;
-                
-                closeDeleteConfirm(); 
-                elementToRemove.classList.add('slide-out'); 
+                const idToDelete = deleteIdPending; const elementToRemove = deleteElementPending;
+                closeDeleteConfirm(); elementToRemove.classList.add('slide-out'); 
                 
                 try {
-                    if (currentUser) {
-                        await deleteDoc(doc(db, "transactions", String(idToDelete)));
-                    }
+                    if (currentUser) { await deleteDoc(doc(db, "transactions", String(idToDelete))); }
                     setTimeout(() => {
                         transactions = transactions.filter(t => String(t.id) !== String(idToDelete));
                         saveAndRender();
@@ -661,15 +671,12 @@
 
         searchInput.addEventListener('input', updateUI);
 
-        // Budget sync to Firestore
         window.setBudget = async function() {
             budget = document.getElementById('budgetInput').value;
             if (currentUser) {
                 try {
                     await setDoc(doc(db, "userSettings", currentUser.uid), { budget: budget }, { merge: true });
-                } catch(error) {
-                    console.error("Error saving budget", error);
-                }
+                } catch(error) { console.error("Error saving budget", error); }
             } else {
                 localStorage.setItem('budget', budget);
             }
@@ -739,7 +746,6 @@
                         transactions = parsedData;
                         
                         if(currentUser) {
-                            // If user is logged in, push all restored data to Firestore
                             alert("Uploading restored data to Cloud... Please wait.");
                             for(let t of transactions) {
                                 t.userId = currentUser.uid;
@@ -769,9 +775,7 @@
                 transactions = []; budget = 0;
                 localStorage.removeItem('transactions'); localStorage.removeItem('budget');
                 document.getElementById('budgetInput').value = '';
-                saveAndRender();
-                alert("All data has been reset.");
-                closeProfile();
+                saveAndRender(); alert("All data has been reset."); closeProfile();
             }
         });
 
