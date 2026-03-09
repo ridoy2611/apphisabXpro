@@ -56,7 +56,6 @@
         .top-header h2 { color: var(--gold); font-size: 1.2rem; }
         .top-header p { color: var(--text-muted); font-size: 0.9rem; }
         
-        /* Updated Profile Icon for Google Photo */
         .profile-icon { 
             cursor: pointer; transition: 0.2s; width: 45px; height: 45px; 
             border-radius: 50%; overflow: hidden; border: 2px solid var(--gold); 
@@ -368,6 +367,9 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
         import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-analytics.js";
         import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
+        
+        // NEW: Firestore Imports
+        import { getFirestore, collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, where, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyDFTnB_-CmCY_qI80lpH4Qmml6SePdZeGA",
@@ -382,7 +384,10 @@
         const app = initializeApp(firebaseConfig);
         const analytics = getAnalytics(app);
         const auth = getAuth(app);
+        const db = getFirestore(app); // Initialize Firestore
         const provider = new GoogleAuthProvider();
+
+        let currentUser = null; // Track logged-in user
 
         // UI Elements for Auth
         const loginBtn = document.getElementById('google-login-btn');
@@ -413,38 +418,63 @@
             });
         };
 
-        // Auth State Observer
-        onAuthStateChanged(auth, (user) => {
+        // Auth State Observer - FETCH DATA FROM CLOUD
+        onAuthStateChanged(auth, async (user) => {
             if (user) {
+                currentUser = user;
                 welcomeName.innerText = `Hello, ${user.displayName.split(' ')[0]}`;
                 profileName.innerText = user.displayName;
                 profileEmail.innerHTML = `<span class="material-icons" style="font-size: 14px; vertical-align: middle;">email</span> ${user.email}`;
                 
                 if(user.photoURL) {
-                    headerImg.src = user.photoURL;
-                    headerImg.style.display = 'block';
-                    headerIcon.style.display = 'none';
-                    
-                    modalImg.src = user.photoURL;
-                    modalImg.style.display = 'block';
-                    modalIcon.style.display = 'none';
+                    headerImg.src = user.photoURL; headerImg.style.display = 'block'; headerIcon.style.display = 'none';
+                    modalImg.src = user.photoURL; modalImg.style.display = 'block'; modalIcon.style.display = 'none';
                 }
 
                 loginBtn.style.display = 'none';
                 logoutBtn.style.display = 'block';
+
+                // --- Load Data from Firestore ---
+                try {
+                    const q = query(collection(db, "transactions"), where("userId", "==", user.uid));
+                    const querySnapshot = await getDocs(q);
+                    transactions = [];
+                    querySnapshot.forEach((doc) => {
+                        transactions.push({ id: doc.id, ...doc.data() });
+                    });
+                    transactions.sort((a, b) => a.timestamp - b.timestamp);
+
+                    // Load Budget
+                    const userDoc = await getDoc(doc(db, "userSettings", user.uid));
+                    if (userDoc.exists() && userDoc.data().budget) {
+                        budget = userDoc.data().budget;
+                        document.getElementById('budgetInput').value = budget;
+                    }
+
+                    updateUI();
+                    if(document.getElementById('view-reports').classList.contains('active')) updateCharts();
+                } catch (error) {
+                    console.error("Error fetching data:", error);
+                }
+
             } else {
+                currentUser = null;
                 welcomeName.innerText = "Hello, Ridoy";
                 loginBtn.style.display = 'flex';
                 logoutBtn.style.display = 'none';
+
+                // --- Load Data from LocalStorage (Fallback) ---
+                transactions = JSON.parse(localStorage.getItem('transactions')) || [];
+                budget = localStorage.getItem('budget') || 0;
+                document.getElementById('budgetInput').value = budget > 0 ? budget : '';
+                updateUI();
             }
         });
 
-        window.firebaseApp = app;
-    </script>
 
-
-    <script>
-        // --- Navigation Logic ---
+        // ==============================================
+        // APP LOGIC (Merged into Module)
+        // ==============================================
         const navItems = document.querySelectorAll('.nav-item');
         const viewSections = document.querySelectorAll('.view-section');
         const fabBtn = document.getElementById('add-btn');
@@ -462,17 +492,13 @@
             if(targetId === 'view-reports') updateCharts();
         }
 
-        navItems.forEach(item => {
-            item.addEventListener('click', () => switchTab(item.getAttribute('data-target')));
-        });
+        navItems.forEach(item => { item.addEventListener('click', () => switchTab(item.getAttribute('data-target'))); });
         const savedTab = localStorage.getItem('activeTab') || 'view-home';
         switchTab(savedTab);
 
-        // --- Core Application Logic ---
-        let transactions = JSON.parse(localStorage.getItem('transactions')) || [];
-        let budget = localStorage.getItem('budget') || 0;
-        document.getElementById('budgetInput').value = budget > 0 ? budget : '';
-
+        let transactions = [];
+        let budget = 0;
+        
         const form = document.getElementById('form');
         const searchInput = document.getElementById('search-input');
         const modal = document.getElementById('add-modal');
@@ -490,19 +516,19 @@
         function updateUI() {
             const list = document.getElementById('transaction-list');
             list.innerHTML = '';
-            
             let income = 0, expense = 0;
             const searchTerm = searchInput.value.toLowerCase();
 
             transactions.filter(t => t.text.toLowerCase().includes(searchTerm)).reverse().forEach(t => {
-                if(t.type === 'income') income += t.amount;
-                else expense += t.amount;
+                if(t.type === 'income') income += Number(t.amount);
+                else expense += Number(t.amount);
 
                 const li = document.createElement('li');
                 li.classList.add('transaction-item');
                 const sign = t.type === 'income' ? '+' : '-';
                 const amountClass = t.type === 'income' ? 'plus' : 'minus';
 
+                // Notice: id is wrapped in quotes for string processing
                 li.innerHTML = `
                     <div class="trans-left">
                         <span class="trans-title">${t.text}</span>
@@ -511,8 +537,8 @@
                     <div class="trans-right">
                         <span class="trans-amount ${amountClass}">${sign}${formatMoney(t.amount)}</span>
                         <div class="action-btns">
-                            <button class="edit-btn" onclick="editTransaction(${t.id})"><span class="material-icons">edit</span></button>
-                            <button class="delete-btn" onclick="openDeleteConfirm(${t.id}, this)"><span class="material-icons">delete</span></button>
+                            <button class="edit-btn" onclick="editTransaction('${t.id}')"><span class="material-icons">edit</span></button>
+                            <button class="delete-btn" onclick="openDeleteConfirm('${t.id}', this)"><span class="material-icons">delete</span></button>
                         </div>
                     </div>
                 `;
@@ -522,18 +548,19 @@
             document.getElementById('total-balance').innerText = formatMoney(income - expense);
             document.getElementById('total-income').innerText = formatMoney(income);
             document.getElementById('total-expense').innerText = formatMoney(expense);
-            
             checkBudget(expense);
         }
 
         function saveAndRender() {
-            localStorage.setItem('transactions', JSON.stringify(transactions));
+            if (!currentUser) {
+                localStorage.setItem('transactions', JSON.stringify(transactions));
+            }
             updateUI();
             if(document.getElementById('view-reports').classList.contains('active')) updateCharts();
         }
 
-        // --- Add / Edit Form Logic ---
-        form.addEventListener('submit', (e) => {
+        // Add/Edit Transaction (Saves to Firestore)
+        form.addEventListener('submit', async (e) => {
             e.preventDefault();
             const amount = Number(document.getElementById('amount').value);
             
@@ -548,57 +575,68 @@
                 type: document.getElementById('type').value,
                 category: document.getElementById('category').value,
                 wallet: document.getElementById('wallet').value,
-                date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+                date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+                timestamp: Date.now()
             };
 
-            if (isEditing) {
-                transactions = transactions.map(t => t.id === editId ? { ...t, ...transactionData } : t);
-            } else {
-                transactionData.id = Date.now();
-                transactions.push(transactionData);
+            if (currentUser) {
+                transactionData.userId = currentUser.uid;
             }
 
-            closeModal();
-            saveAndRender();
+            try {
+                if (isEditing) {
+                    if (currentUser) {
+                        const docRef = doc(db, "transactions", String(editId));
+                        await updateDoc(docRef, transactionData);
+                    }
+                    transactions = transactions.map(t => String(t.id) === String(editId) ? { id: editId, ...transactionData } : t);
+                } else {
+                    if (currentUser) {
+                        const docRef = await addDoc(collection(db, "transactions"), transactionData);
+                        transactions.push({ id: docRef.id, ...transactionData });
+                    } else {
+                        transactionData.id = Date.now();
+                        transactions.push(transactionData);
+                    }
+                }
+                closeModal();
+                saveAndRender();
+            } catch (error) {
+                console.error("Error saving to Firestore:", error);
+                alert("Failed to save transaction.");
+            }
         });
 
-        // --- Action Buttons (Edit / Delete) ---
-        function editTransaction(id) {
-            const t = transactions.find(tr => tr.id === id);
+        // Global functions for inline onclick
+        window.editTransaction = function(id) {
+            const t = transactions.find(tr => String(tr.id) === String(id));
             if (!t) return;
-            
-            isEditing = true;
-            editId = id;
-            
+            isEditing = true; editId = id;
             document.getElementById('modal-title').innerText = 'Edit Transaction';
             document.getElementById('text').value = t.text;
             document.getElementById('amount').value = t.amount;
             document.getElementById('type').value = t.type;
             document.getElementById('category').value = t.category;
             document.getElementById('wallet').value = t.wallet;
-            
             modal.classList.add('show');
-        }
+        };
 
-        // --- Custom Delete Logic ---
-        function openDeleteConfirm(id, btnElement) {
+        window.openDeleteConfirm = function(id, btnElement) {
             deleteIdPending = id;
             deleteElementPending = btnElement.closest('.transaction-item');
-            
             deleteModal.classList.add('show');
             deleteModal.classList.add('tumble-anim');
-        }
+        };
 
         function closeDeleteConfirm() {
-            deleteModal.classList.remove('show');
-            deleteModal.classList.remove('tumble-anim');
-            deleteIdPending = null;
-            deleteElementPending = null;
+            deleteModal.classList.remove('show'); deleteModal.classList.remove('tumble-anim');
+            deleteIdPending = null; deleteElementPending = null;
         }
 
         document.getElementById('cancel-delete-btn').addEventListener('click', closeDeleteConfirm);
 
-        document.getElementById('confirm-delete-btn').addEventListener('click', () => {
+        // Delete from Firestore
+        document.getElementById('confirm-delete-btn').addEventListener('click', async () => {
             if (deleteIdPending && deleteElementPending) {
                 const idToDelete = deleteIdPending;
                 const elementToRemove = deleteElementPending;
@@ -606,21 +644,37 @@
                 closeDeleteConfirm(); 
                 elementToRemove.classList.add('slide-out'); 
                 
-                setTimeout(() => {
-                    transactions = transactions.filter(t => t.id !== idToDelete);
-                    saveAndRender();
-                }, 400); 
+                try {
+                    if (currentUser) {
+                        await deleteDoc(doc(db, "transactions", String(idToDelete)));
+                    }
+                    setTimeout(() => {
+                        transactions = transactions.filter(t => String(t.id) !== String(idToDelete));
+                        saveAndRender();
+                    }, 400); 
+                } catch (error) {
+                    console.error("Error deleting document:", error);
+                    alert("Failed to delete transaction.");
+                }
             }
         });
 
         searchInput.addEventListener('input', updateUI);
 
-        // --- Budget & Charts ---
-        function setBudget() {
+        // Budget sync to Firestore
+        window.setBudget = async function() {
             budget = document.getElementById('budgetInput').value;
-            localStorage.setItem('budget', budget);
+            if (currentUser) {
+                try {
+                    await setDoc(doc(db, "userSettings", currentUser.uid), { budget: budget }, { merge: true });
+                } catch(error) {
+                    console.error("Error saving budget", error);
+                }
+            } else {
+                localStorage.setItem('budget', budget);
+            }
             updateUI();
-        }
+        };
 
         function checkBudget(expense) {
             const statusLabel = document.getElementById('budgetStatus');
@@ -642,10 +696,10 @@
         function updateCharts() {
             let income = 0, expense = 0, expenseCategories = {};
             transactions.forEach(t => {
-                if(t.type === 'income') income += t.amount;
+                if(t.type === 'income') income += Number(t.amount);
                 else {
-                    expense += t.amount;
-                    expenseCategories[t.category] = (expenseCategories[t.category] || 0) + t.amount;
+                    expense += Number(t.amount);
+                    expenseCategories[t.category] = (expenseCategories[t.category] || 0) + Number(t.amount);
                 }
             });
 
@@ -664,49 +718,56 @@
             });
         }
 
-        // --- Backup, Restore and Reset Logic ---
+        // Backup, Restore and Reset
         document.getElementById('btn-backup').addEventListener('click', () => {
-            if(transactions.length === 0) {
-                alert("No transactions available to backup.");
-                return;
-            }
+            if(transactions.length === 0) { alert("No transactions available to backup."); return; }
             const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(transactions));
             const downloadAnchorNode = document.createElement('a');
             downloadAnchorNode.setAttribute("href", dataStr);
             downloadAnchorNode.setAttribute("download", "HisabX_Backup_" + new Date().toISOString().slice(0,10) + ".json");
-            document.body.appendChild(downloadAnchorNode);
-            downloadAnchorNode.click();
-            downloadAnchorNode.remove();
+            document.body.appendChild(downloadAnchorNode); downloadAnchorNode.click(); downloadAnchorNode.remove();
         });
 
-        document.getElementById('restore-file').addEventListener('change', function(e) {
+        document.getElementById('restore-file').addEventListener('change', async function(e) {
             const file = e.target.files[0];
             if (!file) return;
             const reader = new FileReader();
-            reader.onload = function(e) {
+            reader.onload = async function(e) {
                 try {
                     const parsedData = JSON.parse(e.target.result);
                     if (Array.isArray(parsedData)) {
                         transactions = parsedData;
+                        
+                        if(currentUser) {
+                            // If user is logged in, push all restored data to Firestore
+                            alert("Uploading restored data to Cloud... Please wait.");
+                            for(let t of transactions) {
+                                t.userId = currentUser.uid;
+                                t.timestamp = Date.now();
+                                const docRef = await addDoc(collection(db, "transactions"), t);
+                                t.id = docRef.id;
+                            }
+                        }
+                        
                         saveAndRender();
                         alert("Data restored successfully!");
                         closeProfile();
-                    } else {
-                        alert("Invalid backup file format!");
-                    }
-                } catch (error) {
-                    alert("Error reading backup file!");
-                }
+                    } else { alert("Invalid backup file format!"); }
+                } catch (error) { alert("Error reading backup file!"); }
             };
             reader.readAsText(file);
         });
 
-        document.getElementById('btn-reset').addEventListener('click', () => {
-            if(confirm("WARNING: This will delete ALL your transactions and budget. This action cannot be undone. Are you sure?")) {
-                transactions = [];
-                budget = 0;
-                localStorage.removeItem('transactions');
-                localStorage.removeItem('budget');
+        document.getElementById('btn-reset').addEventListener('click', async () => {
+            if(confirm("WARNING: This will delete ALL your transactions. This action cannot be undone. Are you sure?")) {
+                if (currentUser) {
+                    for(let t of transactions) {
+                        await deleteDoc(doc(db, "transactions", String(t.id)));
+                    }
+                    await setDoc(doc(db, "userSettings", currentUser.uid), { budget: 0 }, { merge: true });
+                }
+                transactions = []; budget = 0;
+                localStorage.removeItem('transactions'); localStorage.removeItem('budget');
                 document.getElementById('budgetInput').value = '';
                 saveAndRender();
                 alert("All data has been reset.");
@@ -714,14 +775,10 @@
             }
         });
 
-
-        // --- Modals Management ---
         function closeModal() {
             modal.classList.remove('show');
             setTimeout(() => {
-                form.reset();
-                isEditing = false;
-                editId = null;
+                form.reset(); isEditing = false; editId = null;
                 document.getElementById('modal-title').innerText = 'Add Transaction';
             }, 300); 
         }
@@ -730,7 +787,6 @@
 
         document.getElementById('add-btn').addEventListener('click', () => modal.classList.add('show'));
         document.getElementById('close-modal').addEventListener('click', closeModal);
-        
         document.getElementById('profile-btn').addEventListener('click', () => profileModal.classList.add('show'));
         document.getElementById('close-profile').addEventListener('click', closeProfile);
         document.getElementById('btn-close-profile').addEventListener('click', closeProfile);
@@ -741,9 +797,6 @@
             if (e.target === deleteModal) closeDeleteConfirm();
         });
 
-        updateUI();
-
-        // --- Register Service Worker ---
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('./sw.js')
