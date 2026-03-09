@@ -373,7 +373,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
         import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, where, setDoc, getDoc, enableIndexedDbPersistence } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, query, where, setDoc, getDoc, enableIndexedDbPersistence, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyDFTnB_-CmCY_qI80lpH4Qmml6SePdZeGA",
@@ -388,7 +388,7 @@
         const auth = getAuth(app);
         const db = getFirestore(app); 
 
-        // ১. Firebase Offline Persistence চালু করা হলো
+        // Firebase Offline Persistence
         enableIndexedDbPersistence(db).catch((err) => {
             if (err.code == 'failed-precondition') {
                 console.warn('Multiple tabs open, offline persistence can only be enabled in one tab.');
@@ -417,7 +417,7 @@
             errorMsg.style.display = 'block';
         };
 
-        // Login Logic
+        // Login & Sign Up Logic
         loginBtn.onclick = async () => {
             errorMsg.style.display = 'none';
             if(!emailInput.value || !passwordInput.value) return showError("Please enter email and password.");
@@ -425,14 +425,10 @@
                 loginBtn.innerText = "Wait...";
                 await signInWithEmailAndPassword(auth, emailInput.value, passwordInput.value);
                 document.getElementById('profile-modal').classList.remove('show');
-            } catch (error) {
-                showError("Login Failed: " + error.message.replace('Firebase:', ''));
-            } finally {
-                loginBtn.innerText = "Login";
-            }
+            } catch (error) { showError("Login Failed: " + error.message.replace('Firebase:', '')); } 
+            finally { loginBtn.innerText = "Login"; }
         };
 
-        // Sign Up Logic
         signupBtn.onclick = async () => {
             errorMsg.style.display = 'none';
             if(!emailInput.value || !passwordInput.value) return showError("Please enter email and password.");
@@ -441,21 +437,15 @@
                 await createUserWithEmailAndPassword(auth, emailInput.value, passwordInput.value);
                 document.getElementById('profile-modal').classList.remove('show');
                 alert("Account created successfully!");
-            } catch (error) {
-                showError("Sign Up Failed: " + error.message.replace('Firebase:', ''));
-            } finally {
-                signupBtn.innerText = "Sign Up";
-            }
+            } catch (error) { showError("Sign Up Failed: " + error.message.replace('Firebase:', '')); } 
+            finally { signupBtn.innerText = "Sign Up"; }
         };
 
-        // Logout Logic
-        logoutBtn.onclick = () => {
-            signOut(auth).then(() => {
-                location.reload(); 
-            });
-        };
+        logoutBtn.onclick = () => { signOut(auth).then(() => { location.reload(); }); };
 
-        // Auth State Observer - FETCH DATA FROM CLOUD
+        let unsubscribe = null; 
+
+        // Auth State Observer
         onAuthStateChanged(auth, async (user) => {
             if (user) {
                 currentUser = user;
@@ -468,73 +458,70 @@
                 authContainer.style.display = 'none';
                 logoutBtn.style.display = 'block';
 
-                // ২. LocalStorage এর অফলাইন ডাটা ক্লাউডে সিঙ্ক করা
+                // 🔥 ১. ইনস্ট্যান্ট অফলাইন লোডিং (Local Cache Fallback)
+                const cachedTransactions = localStorage.getItem('offline_cloud_cache');
+                if (cachedTransactions) {
+                    transactions = JSON.parse(cachedTransactions);
+                    updateUI();
+                    if(document.getElementById('view-reports').classList.contains('active')) updateCharts();
+                }
+
+                // Sync Guest Data to Cloud (লগআউট অবস্থায় এন্ট্রি করা ডাটা)
                 const localTransactions = JSON.parse(localStorage.getItem('transactions')) || [];
                 if (localTransactions.length > 0) {
-                    console.log("Syncing offline local data to cloud...");
                     for (let t of localTransactions) {
                         const transactionData = {
-                            text: t.text,
-                            amount: t.amount,
-                            type: t.type,
-                            category: t.category,
-                            wallet: t.wallet,
-                            date: t.date,
-                            timestamp: t.timestamp || Date.now(),
-                            userId: user.uid
+                            text: t.text, amount: t.amount, type: t.type, category: t.category,
+                            wallet: t.wallet, date: t.date, timestamp: t.timestamp || Date.now(), userId: user.uid
                         };
-                        try {
-                            await addDoc(collection(db, "transactions"), transactionData);
-                        } catch(e) {
-                            console.error("Error syncing local doc", e);
-                        }
+                        addDoc(collection(db, "transactions"), transactionData).catch(e => console.error(e));
                     }
-                    localStorage.removeItem('transactions'); // সিঙ্ক শেষে ডিলিট
-                    alert("আপনার অফলাইনে থাকা পূর্বের ডাটাগুলো সফলভাবে ক্লাউডে আপলোড হয়েছে!");
+                    localStorage.removeItem('transactions');
+                    alert("আপনার অফলাইনে থাকা পূর্বের ডাটাগুলো ক্লাউডে আপলোড হয়েছে!");
                 }
 
-                // লোকাল বাজেট সিঙ্ক
                 const localBudget = localStorage.getItem('budget');
                 if(localBudget && localBudget > 0) {
-                    try {
-                        await setDoc(doc(db, "userSettings", user.uid), { budget: localBudget }, { merge: true });
-                        localStorage.removeItem('budget');
-                    } catch(e) { console.error(e); }
+                    setDoc(doc(db, "userSettings", user.uid), { budget: localBudget }, { merge: true });
+                    localStorage.removeItem('budget');
                 }
 
-                // --- Load Data from Firestore ---
-                try {
-                    const q = query(collection(db, "transactions"), where("userId", "==", user.uid));
-                    const querySnapshot = await getDocs(q);
+                // Load Budget
+                getDoc(doc(db, "userSettings", user.uid)).then(userDoc => {
+                    if (userDoc.exists() && userDoc.data().budget) {
+                        budget = userDoc.data().budget;
+                        document.getElementById('budgetInput').value = budget;
+                        updateUI();
+                    }
+                });
+
+                // 🔥 ২. REAL-TIME DATA FETCHING (Firebase onSnapshot)
+                const q = query(collection(db, "transactions"), where("userId", "==", user.uid));
+                if(unsubscribe) unsubscribe(); 
+                
+                unsubscribe = onSnapshot(q, (querySnapshot) => {
                     transactions = [];
                     querySnapshot.forEach((doc) => {
                         transactions.push({ id: doc.id, ...doc.data() });
                     });
                     transactions.sort((a, b) => a.timestamp - b.timestamp);
-
-                    // Load Budget
-                    const userDoc = await getDoc(doc(db, "userSettings", user.uid));
-                    if (userDoc.exists() && userDoc.data().budget) {
-                        budget = userDoc.data().budget;
-                        document.getElementById('budgetInput').value = budget;
-                    }
-
-                    updateUI();
+                    
+                    // ফায়ারবেস থেকে লেটেস্ট ডাটা আসার পর সেটি লোকাল ক্যাশে সেভ করে রাখা
+                    localStorage.setItem('offline_cloud_cache', JSON.stringify(transactions));
+                    
+                    updateUI(); 
                     if(document.getElementById('view-reports').classList.contains('active')) updateCharts();
-                } catch (error) {
-                    console.error("Error fetching data:", error);
-                }
+                });
 
             } else {
                 currentUser = null;
+                if(unsubscribe) { unsubscribe(); unsubscribe = null; } 
+
                 welcomeName.innerText = "Hello, Guest";
                 profileName.innerText = "Guest User";
                 profileEmail.innerHTML = `<span class="material-icons" style="font-size: 14px; vertical-align: middle;">email</span> Not logged in`;
-                
-                authContainer.style.display = 'block';
-                logoutBtn.style.display = 'none';
+                authContainer.style.display = 'block'; logoutBtn.style.display = 'none';
 
-                // --- Load Data from LocalStorage (Fallback) ---
                 transactions = JSON.parse(localStorage.getItem('transactions')) || [];
                 budget = localStorage.getItem('budget') || 0;
                 document.getElementById('budgetInput').value = budget > 0 ? budget : '';
@@ -542,18 +529,13 @@
             }
         });
 
-        // ==============================================
-        // APP LOGIC (Merged into Module)
-        // ==============================================
+        // App Navigation Logic
         const navItems = document.querySelectorAll('.nav-item');
         const viewSections = document.querySelectorAll('.view-section');
         const fabBtn = document.getElementById('add-btn');
 
         function switchTab(targetId) {
-            navItems.forEach(nav => {
-                nav.classList.remove('active');
-                if(nav.getAttribute('data-target') === targetId) nav.classList.add('active');
-            });
+            navItems.forEach(nav => { nav.classList.remove('active'); if(nav.getAttribute('data-target') === targetId) nav.classList.add('active'); });
             viewSections.forEach(view => view.classList.remove('active'));
             document.getElementById(targetId).classList.add('active');
             
@@ -566,35 +548,24 @@
         const savedTab = localStorage.getItem('activeTab') || 'view-home';
         switchTab(savedTab);
 
-        let transactions = [];
-        let budget = 0;
-        
+        let transactions = []; let budget = 0;
         const form = document.getElementById('form');
         const searchInput = document.getElementById('search-input');
         const modal = document.getElementById('add-modal');
         const profileModal = document.getElementById('profile-modal');
         const deleteModal = document.getElementById('delete-modal');
-        
-        let isEditing = false, editId = null;
-        let deleteIdPending = null;
-        let deleteElementPending = null;
+        let isEditing = false, editId = null, deleteIdPending = null, deleteElementPending = null;
 
-        function formatMoney(amount) {
-            return '৳ ' + Math.abs(amount).toLocaleString('en-IN');
-        }
+        function formatMoney(amount) { return '৳ ' + Math.abs(amount).toLocaleString('en-IN'); }
 
         function updateUI() {
             const list = document.getElementById('transaction-list');
-            list.innerHTML = '';
-            let income = 0, expense = 0;
+            list.innerHTML = ''; let income = 0, expense = 0;
             const searchTerm = searchInput.value.toLowerCase();
 
             transactions.filter(t => t.text.toLowerCase().includes(searchTerm)).reverse().forEach(t => {
-                if(t.type === 'income') income += Number(t.amount);
-                else expense += Number(t.amount);
-
-                const li = document.createElement('li');
-                li.classList.add('transaction-item');
+                if(t.type === 'income') income += Number(t.amount); else expense += Number(t.amount);
+                const li = document.createElement('li'); li.classList.add('transaction-item');
                 const sign = t.type === 'income' ? '+' : '-';
                 const amountClass = t.type === 'income' ? 'plus' : 'minus';
 
@@ -620,70 +591,47 @@
             checkBudget(expense);
         }
 
-        function saveAndRender() {
-            if (!currentUser) {
-                localStorage.setItem('transactions', JSON.stringify(transactions));
-            }
+        function saveAndRenderGuest() {
+            if (!currentUser) { localStorage.setItem('transactions', JSON.stringify(transactions)); }
             updateUI();
             if(document.getElementById('view-reports').classList.contains('active')) updateCharts();
         }
 
-        // Add/Edit Transaction (Optimistic UI Update)
+        // Add / Edit Transaction
         form.addEventListener('submit', (e) => {
             e.preventDefault();
             const amount = Number(document.getElementById('amount').value);
             if (amount <= 0) { alert('Amount must be greater than zero!'); return; }
 
             const transactionData = {
-                text: document.getElementById('text').value,
-                amount: amount,
-                type: document.getElementById('type').value,
-                category: document.getElementById('category').value,
-                wallet: document.getElementById('wallet').value,
+                text: document.getElementById('text').value, amount: amount, type: document.getElementById('type').value,
+                category: document.getElementById('category').value, wallet: document.getElementById('wallet').value,
                 date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
                 timestamp: Date.now()
             };
 
-            if (currentUser) { transactionData.userId = currentUser.uid; }
-
-            try {
+            if (currentUser) {
+                transactionData.userId = currentUser.uid;
                 if (isEditing) {
-                    transactions = transactions.map(t => String(t.id) === String(editId) ? { id: editId, ...transactionData } : t);
-                    
-                    if (currentUser) {
-                        const docRef = doc(db, "transactions", String(editId));
-                        updateDoc(docRef, transactionData).catch(err => console.error("Offline sync pending", err));
-                    }
+                    updateDoc(doc(db, "transactions", String(editId)), transactionData); 
                 } else {
-                    if (currentUser) {
-                        const tempId = "temp_" + Date.now();
-                        transactions.push({ id: tempId, ...transactionData });
-                        
-                        addDoc(collection(db, "transactions"), transactionData).then(docRef => {
-                            const index = transactions.findIndex(t => t.id === tempId);
-                            if(index !== -1) transactions[index].id = docRef.id;
-                        }).catch(err => console.error("Offline sync pending", err));
-                    } else {
-                        transactionData.id = Date.now();
-                        transactions.push(transactionData);
-                    }
+                    addDoc(collection(db, "transactions"), transactionData); 
                 }
-                closeModal(); saveAndRender();
-            } catch (error) {
-                console.error("Error saving:", error);
-                alert("Failed to save transaction.");
+            } else {
+                transactionData.id = Date.now();
+                if (isEditing) { transactions = transactions.map(t => String(t.id) === String(editId) ? { id: editId, ...transactionData } : t); } 
+                else { transactions.push(transactionData); }
+                saveAndRenderGuest();
             }
+            closeModal();
         });
 
         window.editTransaction = function(id) {
-            const t = transactions.find(tr => String(tr.id) === String(id));
-            if (!t) return;
+            const t = transactions.find(tr => String(tr.id) === String(id)); if (!t) return;
             isEditing = true; editId = id;
             document.getElementById('modal-title').innerText = 'Edit Transaction';
-            document.getElementById('text').value = t.text;
-            document.getElementById('amount').value = t.amount;
-            document.getElementById('type').value = t.type;
-            document.getElementById('category').value = t.category;
+            document.getElementById('text').value = t.text; document.getElementById('amount').value = t.amount;
+            document.getElementById('type').value = t.type; document.getElementById('category').value = t.category;
             document.getElementById('wallet').value = t.wallet;
             modal.classList.add('show');
         };
@@ -700,22 +648,18 @@
 
         document.getElementById('cancel-delete-btn').addEventListener('click', closeDeleteConfirm);
 
-        // Delete (Optimistic UI Update)
         document.getElementById('confirm-delete-btn').addEventListener('click', () => {
             if (deleteIdPending && deleteElementPending) {
-                const idToDelete = deleteIdPending; 
-                const elementToRemove = deleteElementPending;
+                const idToDelete = deleteIdPending; const elementToRemove = deleteElementPending;
+                closeDeleteConfirm(); elementToRemove.classList.add('slide-out'); 
                 
-                closeDeleteConfirm(); 
-                elementToRemove.classList.add('slide-out'); 
-                
-                setTimeout(() => {
-                    transactions = transactions.filter(t => String(t.id) !== String(idToDelete));
-                    saveAndRender();
-                }, 400); 
-
                 if (currentUser) { 
-                    deleteDoc(doc(db, "transactions", String(idToDelete))).catch(e => console.error("Offline delete pending", e)); 
+                    deleteDoc(doc(db, "transactions", String(idToDelete))); 
+                } else {
+                    setTimeout(() => {
+                        transactions = transactions.filter(t => String(t.id) !== String(idToDelete));
+                        saveAndRenderGuest();
+                    }, 400); 
                 }
             }
         });
@@ -724,30 +668,16 @@
 
         window.setBudget = async function() {
             budget = document.getElementById('budgetInput').value;
-            if (currentUser) {
-                try {
-                    await setDoc(doc(db, "userSettings", currentUser.uid), { budget: budget }, { merge: true });
-                } catch(error) { console.error("Error saving budget", error); }
-            } else {
-                localStorage.setItem('budget', budget);
-            }
+            if (currentUser) { setDoc(doc(db, "userSettings", currentUser.uid), { budget: budget }, { merge: true }); } 
+            else { localStorage.setItem('budget', budget); }
             updateUI();
         };
 
         function checkBudget(expense) {
             const statusLabel = document.getElementById('budgetStatus');
-            if (!budget || budget == 0) {
-                statusLabel.innerText = "No budget set.";
-                statusLabel.style.color = "var(--text-muted)";
-                return;
-            }
-            if (expense > budget) {
-                statusLabel.innerText = "⚠ Budget exceeded!";
-                statusLabel.style.color = "var(--expense-color)";
-            } else {
-                statusLabel.innerText = "✓ Budget OK";
-                statusLabel.style.color = "var(--income-color)";
-            }
+            if (!budget || budget == 0) { statusLabel.innerText = "No budget set."; statusLabel.style.color = "var(--text-muted)"; return; }
+            if (expense > budget) { statusLabel.innerText = "⚠ Budget exceeded!"; statusLabel.style.color = "var(--expense-color)"; } 
+            else { statusLabel.innerText = "✓ Budget OK"; statusLabel.style.color = "var(--income-color)"; }
         }
 
         let pieChart, barChart;
@@ -755,87 +685,59 @@
             let income = 0, expense = 0, expenseCategories = {};
             transactions.forEach(t => {
                 if(t.type === 'income') income += Number(t.amount);
-                else {
-                    expense += Number(t.amount);
-                    expenseCategories[t.category] = (expenseCategories[t.category] || 0) + Number(t.amount);
-                }
+                else { expense += Number(t.amount); expenseCategories[t.category] = (expenseCategories[t.category] || 0) + Number(t.amount); }
             });
 
             if(pieChart) pieChart.destroy();
-            pieChart = new Chart(document.getElementById('pieChart').getContext('2d'), {
-                type: 'doughnut',
-                data: { labels: ['Income', 'Expense'], datasets: [{ data: [income, expense], backgroundColor: ['#4caf50', '#f44336'] }] },
-                options: { plugins: { legend: { labels: { color: 'white' } } } }
-            });
+            pieChart = new Chart(document.getElementById('pieChart').getContext('2d'), { type: 'doughnut', data: { labels: ['Income', 'Expense'], datasets: [{ data: [income, expense], backgroundColor: ['#4caf50', '#f44336'] }] }, options: { plugins: { legend: { labels: { color: 'white' } } } } });
 
             if(barChart) barChart.destroy();
-            barChart = new Chart(document.getElementById('barChart').getContext('2d'), {
-                type: 'bar',
-                data: { labels: Object.keys(expenseCategories), datasets: [{ label: 'Expenses (৳)', data: Object.values(expenseCategories), backgroundColor: '#d4af37' }] },
-                options: { plugins: { legend: { labels: { color: 'white' } } }, scales: { x: { ticks: { color: 'white' } }, y: { ticks: { color: 'white' } } } }
-            });
+            barChart = new Chart(document.getElementById('barChart').getContext('2d'), { type: 'bar', data: { labels: Object.keys(expenseCategories), datasets: [{ label: 'Expenses (৳)', data: Object.values(expenseCategories), backgroundColor: '#d4af37' }] }, options: { plugins: { legend: { labels: { color: 'white' } } }, scales: { x: { ticks: { color: 'white' } }, y: { ticks: { color: 'white' } } } } });
         }
 
-        // Backup, Restore and Reset
+        // Backup, Restore and Reset logic
         document.getElementById('btn-backup').addEventListener('click', () => {
             if(transactions.length === 0) { alert("No transactions available to backup."); return; }
             const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(transactions));
-            const downloadAnchorNode = document.createElement('a');
-            downloadAnchorNode.setAttribute("href", dataStr);
-            downloadAnchorNode.setAttribute("download", "HisabX_Backup_" + new Date().toISOString().slice(0,10) + ".json");
+            const downloadAnchorNode = document.createElement('a'); downloadAnchorNode.setAttribute("href", dataStr); downloadAnchorNode.setAttribute("download", "HisabX_Backup_" + new Date().toISOString().slice(0,10) + ".json");
             document.body.appendChild(downloadAnchorNode); downloadAnchorNode.click(); downloadAnchorNode.remove();
         });
 
         document.getElementById('restore-file').addEventListener('change', async function(e) {
-            const file = e.target.files[0];
-            if (!file) return;
+            const file = e.target.files[0]; if (!file) return;
             const reader = new FileReader();
             reader.onload = async function(e) {
                 try {
                     const parsedData = JSON.parse(e.target.result);
                     if (Array.isArray(parsedData)) {
                         transactions = parsedData;
-                        
                         if(currentUser) {
-                            alert("Uploading restored data to Cloud... Please wait.");
-                            for(let t of transactions) {
-                                t.userId = currentUser.uid;
-                                t.timestamp = Date.now();
-                                const docRef = await addDoc(collection(db, "transactions"), t);
-                                t.id = docRef.id;
-                            }
-                        }
-                        
-                        saveAndRender();
-                        alert("Data restored successfully!");
-                        closeProfile();
+                            alert("Uploading restored data... Please wait.");
+                            for(let t of transactions) { t.userId = currentUser.uid; t.timestamp = Date.now(); addDoc(collection(db, "transactions"), t); }
+                        } else { saveAndRenderGuest(); }
+                        alert("Data restored successfully!"); closeProfile();
                     } else { alert("Invalid backup file format!"); }
                 } catch (error) { alert("Error reading backup file!"); }
             };
             reader.readAsText(file);
         });
 
-        document.getElementById('btn-reset').addEventListener('click', async () => {
-            if(confirm("WARNING: This will delete ALL your transactions. This action cannot be undone. Are you sure?")) {
+        document.getElementById('btn-reset').addEventListener('click', () => {
+            if(confirm("WARNING: This will delete ALL your transactions. Are you sure?")) {
                 if (currentUser) {
-                    for(let t of transactions) {
-                        await deleteDoc(doc(db, "transactions", String(t.id)));
-                    }
-                    await setDoc(doc(db, "userSettings", currentUser.uid), { budget: 0 }, { merge: true });
+                    for(let t of transactions) { deleteDoc(doc(db, "transactions", String(t.id))); }
+                    setDoc(doc(db, "userSettings", currentUser.uid), { budget: 0 }, { merge: true });
+                } else {
+                    transactions = []; budget = 0; localStorage.removeItem('transactions'); localStorage.removeItem('budget');
+                    document.getElementById('budgetInput').value = ''; saveAndRenderGuest();
                 }
-                transactions = []; budget = 0;
-                localStorage.removeItem('transactions'); localStorage.removeItem('budget');
-                document.getElementById('budgetInput').value = '';
-                saveAndRender(); alert("All data has been reset."); closeProfile();
+                alert("All data has been reset."); closeProfile();
             }
         });
 
         function closeModal() {
             modal.classList.remove('show');
-            setTimeout(() => {
-                form.reset(); isEditing = false; editId = null;
-                document.getElementById('modal-title').innerText = 'Add Transaction';
-            }, 300); 
+            setTimeout(() => { form.reset(); isEditing = false; editId = null; document.getElementById('modal-title').innerText = 'Add Transaction'; }, 300); 
         }
 
         function closeProfile() { profileModal.classList.remove('show'); }
@@ -854,9 +756,7 @@
 
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('./sw.js')
-                    .then(reg => console.log('Service Worker Registered Successfully!'))
-                    .catch(err => console.error('Service Worker Registration Failed!', err));
+                navigator.serviceWorker.register('./sw.js').then(reg => console.log('Service Worker Registered!')).catch(err => console.error('Service Worker Registration Failed!', err));
             });
         }
     </script>
