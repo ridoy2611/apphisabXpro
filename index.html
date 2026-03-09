@@ -373,7 +373,6 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
         import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
-        // Added enableIndexedDbPersistence here
         import { getFirestore, collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, where, setDoc, getDoc, enableIndexedDbPersistence } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
 
         const firebaseConfig = {
@@ -629,8 +628,8 @@
             if(document.getElementById('view-reports').classList.contains('active')) updateCharts();
         }
 
-        // Add/Edit Transaction (Saves to Firestore)
-        form.addEventListener('submit', async (e) => {
+        // Add/Edit Transaction (Optimistic UI Update)
+        form.addEventListener('submit', (e) => {
             e.preventDefault();
             const amount = Number(document.getElementById('amount').value);
             if (amount <= 0) { alert('Amount must be greater than zero!'); return; }
@@ -649,15 +648,21 @@
 
             try {
                 if (isEditing) {
+                    transactions = transactions.map(t => String(t.id) === String(editId) ? { id: editId, ...transactionData } : t);
+                    
                     if (currentUser) {
                         const docRef = doc(db, "transactions", String(editId));
-                        await updateDoc(docRef, transactionData);
+                        updateDoc(docRef, transactionData).catch(err => console.error("Offline sync pending", err));
                     }
-                    transactions = transactions.map(t => String(t.id) === String(editId) ? { id: editId, ...transactionData } : t);
                 } else {
                     if (currentUser) {
-                        const docRef = await addDoc(collection(db, "transactions"), transactionData);
-                        transactions.push({ id: docRef.id, ...transactionData });
+                        const tempId = "temp_" + Date.now();
+                        transactions.push({ id: tempId, ...transactionData });
+                        
+                        addDoc(collection(db, "transactions"), transactionData).then(docRef => {
+                            const index = transactions.findIndex(t => t.id === tempId);
+                            if(index !== -1) transactions[index].id = docRef.id;
+                        }).catch(err => console.error("Offline sync pending", err));
                     } else {
                         transactionData.id = Date.now();
                         transactions.push(transactionData);
@@ -665,7 +670,7 @@
                 }
                 closeModal(); saveAndRender();
             } catch (error) {
-                console.error("Error saving to Firestore:", error);
+                console.error("Error saving:", error);
                 alert("Failed to save transaction.");
             }
         });
@@ -695,20 +700,22 @@
 
         document.getElementById('cancel-delete-btn').addEventListener('click', closeDeleteConfirm);
 
-        document.getElementById('confirm-delete-btn').addEventListener('click', async () => {
+        // Delete (Optimistic UI Update)
+        document.getElementById('confirm-delete-btn').addEventListener('click', () => {
             if (deleteIdPending && deleteElementPending) {
-                const idToDelete = deleteIdPending; const elementToRemove = deleteElementPending;
-                closeDeleteConfirm(); elementToRemove.classList.add('slide-out'); 
+                const idToDelete = deleteIdPending; 
+                const elementToRemove = deleteElementPending;
                 
-                try {
-                    if (currentUser) { await deleteDoc(doc(db, "transactions", String(idToDelete))); }
-                    setTimeout(() => {
-                        transactions = transactions.filter(t => String(t.id) !== String(idToDelete));
-                        saveAndRender();
-                    }, 400); 
-                } catch (error) {
-                    console.error("Error deleting document:", error);
-                    alert("Failed to delete transaction.");
+                closeDeleteConfirm(); 
+                elementToRemove.classList.add('slide-out'); 
+                
+                setTimeout(() => {
+                    transactions = transactions.filter(t => String(t.id) !== String(idToDelete));
+                    saveAndRender();
+                }, 400); 
+
+                if (currentUser) { 
+                    deleteDoc(doc(db, "transactions", String(idToDelete))).catch(e => console.error("Offline delete pending", e)); 
                 }
             }
         });
