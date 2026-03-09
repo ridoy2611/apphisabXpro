@@ -373,7 +373,8 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
         import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, where, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+        // Added enableIndexedDbPersistence here
+        import { getFirestore, collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, where, setDoc, getDoc, enableIndexedDbPersistence } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyDFTnB_-CmCY_qI80lpH4Qmml6SePdZeGA",
@@ -387,6 +388,15 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app); 
+
+        // ১. Firebase Offline Persistence চালু করা হলো
+        enableIndexedDbPersistence(db).catch((err) => {
+            if (err.code == 'failed-precondition') {
+                console.warn('Multiple tabs open, offline persistence can only be enabled in one tab.');
+            } else if (err.code == 'unimplemented') {
+                console.warn('The current browser does not support offline persistence.');
+            }
+        });
 
         let currentUser = null; 
 
@@ -450,7 +460,7 @@
         onAuthStateChanged(auth, async (user) => {
             if (user) {
                 currentUser = user;
-                const userDisplayName = user.email.split('@')[0]; // Extract name from email
+                const userDisplayName = user.email.split('@')[0]; 
                 
                 welcomeName.innerText = `Hello, ${userDisplayName}`;
                 profileName.innerText = userDisplayName;
@@ -458,6 +468,40 @@
                 
                 authContainer.style.display = 'none';
                 logoutBtn.style.display = 'block';
+
+                // ২. LocalStorage এর অফলাইন ডাটা ক্লাউডে সিঙ্ক করা
+                const localTransactions = JSON.parse(localStorage.getItem('transactions')) || [];
+                if (localTransactions.length > 0) {
+                    console.log("Syncing offline local data to cloud...");
+                    for (let t of localTransactions) {
+                        const transactionData = {
+                            text: t.text,
+                            amount: t.amount,
+                            type: t.type,
+                            category: t.category,
+                            wallet: t.wallet,
+                            date: t.date,
+                            timestamp: t.timestamp || Date.now(),
+                            userId: user.uid
+                        };
+                        try {
+                            await addDoc(collection(db, "transactions"), transactionData);
+                        } catch(e) {
+                            console.error("Error syncing local doc", e);
+                        }
+                    }
+                    localStorage.removeItem('transactions'); // সিঙ্ক শেষে ডিলিট
+                    alert("আপনার অফলাইনে থাকা পূর্বের ডাটাগুলো সফলভাবে ক্লাউডে আপলোড হয়েছে!");
+                }
+
+                // লোকাল বাজেট সিঙ্ক
+                const localBudget = localStorage.getItem('budget');
+                if(localBudget && localBudget > 0) {
+                    try {
+                        await setDoc(doc(db, "userSettings", user.uid), { budget: localBudget }, { merge: true });
+                        localStorage.removeItem('budget');
+                    } catch(e) { console.error(e); }
+                }
 
                 // --- Load Data from Firestore ---
                 try {
