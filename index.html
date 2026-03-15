@@ -552,7 +552,6 @@
             viewSections.forEach(view => view.classList.remove('active'));
             document.getElementById(targetId).classList.add('active');
             
-            // fabBtn.style.display = targetId === 'view-home' ? 'flex' : 'none'; // Commented out to keep FAB visible on all tabs
             localStorage.setItem('activeTab', targetId);
             if(targetId === 'view-reports') updateCharts();
         }
@@ -598,7 +597,9 @@
                 list.appendChild(li);
             });
 
-            document.getElementById('total-balance').innerText = formatMoney(income - margin-expense);
+            // ✔️ ভুলটি এখানেই ছিলো, এটি ঠিক করে দেওয়া হয়েছে:
+            document.getElementById('total-balance').innerText = formatMoney(income - expense);
+            
             document.getElementById('total-income').innerText = formatMoney(income);
             document.getElementById('total-expense').innerText = formatMoney(expense);
             checkBudget(expense);
